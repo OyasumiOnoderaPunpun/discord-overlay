@@ -22,7 +22,7 @@ class DiscordManager:
         # Each item is a tuple: ("msg", author, content) or ("status", text)
         self.message_queue = queue.Queue()
 
-    def send_webhook_message(self, content):
+    def send_webhook_message(self, content, attachment=None):
         """Send a message via webhook — runs async on the bot's event loop (non-blocking)."""
         webhook_url = self.config.get("webhook_url")
         if not webhook_url:
@@ -31,15 +31,33 @@ class DiscordManager:
         username = self.config.get("username", "Player")
 
         async def _send_async():
+            if not getattr(self, 'session', None) or self.session.closed:
+                self.session = aiohttp.ClientSession()
+            file_handle = None
             try:
-                async with aiohttp.ClientSession() as session:
-                    await session.post(
-                        webhook_url,
-                        json={"content": content, "username": username},
-                        timeout=aiohttp.ClientTimeout(total=5)
-                    )
+                data = aiohttp.FormData()
+                if content:
+                    data.add_field("content", content)
+                data.add_field("username", username)
+
+                if attachment:
+                    import os
+                    if "path" in attachment:
+                        file_handle = open(attachment["path"], "rb")
+                        data.add_field("file", file_handle, filename=os.path.basename(attachment["path"]))
+                    elif "bytes" in attachment and "filename" in attachment:
+                        data.add_field("file", attachment["bytes"], filename=attachment["filename"])
+
+                await self.session.post(
+                    webhook_url,
+                    data=data,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                )
             except Exception as e:
                 print(f"Webhook error: {e}")
+            finally:
+                if file_handle:
+                    file_handle.close()
 
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(_send_async(), self.loop)
@@ -83,4 +101,6 @@ class DiscordManager:
 
     def stop_bot(self):
         if self.loop and self.bot and self.loop.is_running():
+            if getattr(self, 'session', None) and not self.session.closed:
+                asyncio.run_coroutine_threadsafe(self.session.close(), self.loop)
             asyncio.run_coroutine_threadsafe(self.bot.close(), self.loop)

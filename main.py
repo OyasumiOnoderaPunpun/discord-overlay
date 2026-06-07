@@ -4,9 +4,9 @@ import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QLabel, QLineEdit,
                              QScrollArea, QPushButton, QFrame, QSizeGrip, QSlider,
-                             QColorDialog)
-from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QCursor, QColor
+                             QColorDialog, QFileDialog)
+from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QObject, QByteArray, QBuffer, QIODevice
+from PyQt6.QtGui import QCursor, QColor, QKeySequence
 from pynput import keyboard
 
 
@@ -117,6 +117,23 @@ def _section_header(text):
         "letter-spacing: 2px; padding: 6px 0 2px 0;"
     )
     return lbl
+
+class ChatInput(QLineEdit):
+    image_pasted = pyqtSignal(bytes, str)
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Paste):
+            clipboard = QApplication.clipboard()
+            mime = clipboard.mimeData()
+            if mime.hasImage():
+                img = clipboard.image()
+                ba = QByteArray()
+                buffer = QBuffer(ba)
+                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                img.save(buffer, "PNG")
+                self.image_pasted.emit(ba.data(), "pasted_image.png")
+                return
+        super().keyPressEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +400,7 @@ class ChatOverlay(QMainWindow):
         self.show_scrollbar= bool(config.get("show_scrollbar", False))
         self.bg_rgb        = tuple(config.get("bg_rgb", [20, 20, 28]))
         self._recording    = False
+        self.current_attachment = None
 
         self._hotkey_signals = HotkeySignals()
         self._hotkey_signals.toggle_chat.connect(self._toggle_chat)
@@ -447,13 +465,40 @@ class ChatOverlay(QMainWindow):
         self.scroll_area.setWidget(self.chat_widget)
         bg.addWidget(self.scroll_area, 1)
 
+        # ── Attachment preview row ────────────────────────────────────────────
+        self.attachment_widget = QWidget()
+        self.attachment_widget.setVisible(False)
+        self.attachment_layout = QHBoxLayout(self.attachment_widget)
+        self.attachment_layout.setContentsMargins(8, 0, 4, 0)
+        
+        self.attachment_label = QLabel()
+        self.attachment_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        self.attachment_layout.addWidget(self.attachment_label)
+        
+        self.remove_attachment_btn = QPushButton("✕")
+        self.remove_attachment_btn.setFixedSize(18, 18)
+        self.remove_attachment_btn.setStyleSheet("color: #ff6b6b; font-weight: bold;")
+        self.remove_attachment_btn.clicked.connect(self._clear_attachment)
+        self.attachment_layout.addWidget(self.remove_attachment_btn)
+        self.attachment_layout.addStretch()
+        bg.addWidget(self.attachment_widget)
+
         # ── Input row + resize grip ───────────────────────────────────────────
         input_row = QHBoxLayout()
         input_row.setContentsMargins(8, 0, 4, 0)
-        self.input_box = QLineEdit()
+        
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setFixedSize(22, 22)
+        self.attach_btn.setToolTip("Attach File")
+        self.attach_btn.clicked.connect(self._open_file_dialog)
+        input_row.addWidget(self.attach_btn)
+
+        self.input_box = ChatInput()
         self._refresh_placeholder()
         self.input_box.returnPressed.connect(self._send_message)
+        self.input_box.image_pasted.connect(self._on_image_pasted)
         input_row.addWidget(self.input_box)
+
         grip = QSizeGrip(self)
         grip.setFixedSize(14, 14)
         input_row.addWidget(grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
@@ -690,13 +735,34 @@ class ChatOverlay(QMainWindow):
         sb.setValue(sb.maximum())
 
     # -----------------------------------------------------------------------
+    # Attachments
+    # -----------------------------------------------------------------------
+    def _open_file_dialog(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Attach File")
+        if file_path:
+            self.current_attachment = {"path": file_path}
+            import os
+            self.attachment_label.setText(f"📎 {os.path.basename(file_path)}")
+            self.attachment_widget.setVisible(True)
+
+    def _on_image_pasted(self, img_bytes, filename):
+        self.current_attachment = {"bytes": img_bytes, "filename": filename}
+        self.attachment_label.setText(f"📎 {filename}")
+        self.attachment_widget.setVisible(True)
+
+    def _clear_attachment(self):
+        self.current_attachment = None
+        self.attachment_widget.setVisible(False)
+
+    # -----------------------------------------------------------------------
     # Sending  — NO auto-close after Enter; user controls when to close chat
     # -----------------------------------------------------------------------
     def _send_message(self):
         content = self.input_box.text().strip()
-        if content:
-            self.discord_mgr.send_webhook_message(content)
+        if content or self.current_attachment:
+            self.discord_mgr.send_webhook_message(content, self.current_attachment)
             self.input_box.clear()
+            self._clear_attachment()
         # ↑ Intentionally NOT calling _close_chat() here.
         # User presses Esc or the chat hotkey again to dismiss.
 
