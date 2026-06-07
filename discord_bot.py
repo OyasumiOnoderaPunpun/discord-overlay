@@ -87,7 +87,24 @@ class DiscordManager:
                 return
             # Only listen to the configured channel
             if str(message.channel.id) == str(self.config.get("channel_id", "")):
-                self.message_queue.put(("msg", message.author.display_name, message.content))
+                content = message.content
+                if message.attachments:
+                    import os
+                    import tempfile
+                    temp_dir = tempfile.gettempdir()
+                    for att in message.attachments:
+                        if att.content_type and att.content_type.startswith('image/'):
+                            local_path = os.path.join(temp_dir, f"{att.id}_{att.filename}")
+                            html_path = local_path.replace("\\", "/")
+                            try:
+                                await att.save(local_path)
+                                content += f"<br><img src='{html_path}' width='200'>"
+                            except Exception as e:
+                                print(f"Failed to save attachment: {e}")
+                                content += f"<br>[Image: {att.filename}]"
+                        else:
+                            content += f"<br>[Attachment: {att.filename}]"
+                self.message_queue.put(("msg", message.author.display_name, content))
 
         @self.bot.event
         async def on_disconnect():
