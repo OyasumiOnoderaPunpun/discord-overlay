@@ -5,16 +5,152 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QLineEdit, QScrollArea,
                              QPushButton, QFrame, QSizeGrip, QSlider)
 from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QCursor
 from pynput import keyboard
-from discord_bot import DiscordManager
 
 
 # ---------------------------------------------------------------------------
-# Global hotkey signal bridge (pynput runs in its own thread)
+# Signal bridge  (pynput lives in its own thread → Qt signals are thread-safe)
 # ---------------------------------------------------------------------------
 class HotkeySignals(QObject):
-    lock_position   = pyqtSignal()   # Insert  → toggle position lock
-    toggle_chat     = pyqtSignal()   # chat_hotkey → focus / unfocus input
+    toggle_chat    = pyqtSignal()
+    key_recorded   = pyqtSignal(str)   # emitted when user finishes binding a key
+
+
+# ---------------------------------------------------------------------------
+# Dedicated drag-handle widget
+# ---------------------------------------------------------------------------
+class DragHandle(QFrame):
+    """A grip strip the user grabs to move the parent window."""
+
+    def __init__(self, parent_window, parent=None):
+        super().__init__(parent)
+        self._win    = parent_window
+        self._origin = QPoint()
+
+        self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+        self.setFixedHeight(22)
+        self.setObjectName("drag_handle")
+        self.setToolTip("Drag to move")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 0, 6, 0)
+        dots = QLabel("· · · · · · · · · · · ·")
+        dots.setStyleSheet("color: rgba(255,255,255,40); font-size: 10px; letter-spacing: 2px;")
+        lay.addWidget(dots, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._origin = ev.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, ev):
+        if not self._origin.isNull():
+            delta = ev.globalPosition().toPoint() - self._origin
+            self._win.move(self._win.pos() + delta)
+            self._origin = ev.globalPosition().toPoint()
+
+    def mouseReleaseEvent(self, ev):
+        self._origin = QPoint()
+
+
+# ---------------------------------------------------------------------------
+# Settings panel
+# ---------------------------------------------------------------------------
+class SettingsPanel(QFrame):
+    def __init__(self, overlay, parent=None):
+        super().__init__(parent)
+        self.overlay = overlay
+        self.setObjectName("settings_panel")
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
+
+        # ── Always on Top ────────────────────────────────────────────────────
+        aot_row = QHBoxLayout()
+        aot_icon = QLabel("📌")
+        aot_label = QLabel("Always on Top")
+        aot_label.setStyleSheet("color: #cccccc; font-size: 12px;")
+        aot_row.addWidget(aot_icon)
+        aot_row.addWidget(aot_label)
+        aot_row.addStretch()
+
+        self.aot_btn = QPushButton()
+        self.aot_btn.setCheckable(True)
+        self.aot_btn.setChecked(self.overlay.always_on_top)
+        self.aot_btn.setFixedSize(54, 22)
+        self.aot_btn.setObjectName("toggle_btn")
+        self.aot_btn.clicked.connect(self._on_aot_toggled)
+        self._refresh_aot_label()
+        aot_row.addWidget(self.aot_btn)
+        layout.addLayout(aot_row)
+
+        # ── Chat Hotkey ──────────────────────────────────────────────────────
+        key_row = QHBoxLayout()
+        key_icon = QLabel("💬")
+        key_label = QLabel("Chat Key")
+        key_label.setStyleSheet("color: #cccccc; font-size: 12px;")
+        key_row.addWidget(key_icon)
+        key_row.addWidget(key_label)
+        key_row.addStretch()
+
+        self.key_display = QLabel()
+        self.key_display.setObjectName("key_display")
+        self.key_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.key_display.setFixedSize(30, 22)
+        self._refresh_key_display()
+        key_row.addWidget(self.key_display)
+
+        self.set_key_btn = QPushButton("Set")
+        self.set_key_btn.setObjectName("set_key_btn")
+        self.set_key_btn.setFixedSize(38, 22)
+        self.set_key_btn.clicked.connect(self.overlay._start_key_recording)
+        key_row.addWidget(self.set_key_btn)
+        layout.addLayout(key_row)
+
+        # ── Opacity ──────────────────────────────────────────────────────────
+        op_row = QHBoxLayout()
+        op_icon = QLabel("💡")
+        op_label = QLabel("Opacity")
+        op_label.setStyleSheet("color: #cccccc; font-size: 12px;")
+        op_row.addWidget(op_icon)
+        op_row.addWidget(op_label)
+        op_row.addStretch()
+
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(10, 100)
+        self.opacity_slider.setValue(int(self.overlay.opacity_value * 100))
+        self.opacity_slider.setFixedWidth(100)
+        self.opacity_slider.valueChanged.connect(self.overlay._update_opacity)
+        op_row.addWidget(self.opacity_slider)
+        layout.addLayout(op_row)
+
+    # helpers
+    def _on_aot_toggled(self, checked):
+        self.overlay.always_on_top = checked
+        self.overlay._apply_window_flags()
+        self.overlay._save_config()
+        self._refresh_aot_label()
+
+    def _refresh_aot_label(self):
+        on = self.aot_btn.isChecked()
+        self.aot_btn.setText("ON" if on else "OFF")
+
+    def _refresh_key_display(self):
+        k = self.overlay.chat_hotkey
+        self.key_display.setText(f"`{k}`" if len(k) == 1 else k)
+
+    def set_recording_state(self, recording: bool):
+        if recording:
+            self.set_key_btn.setText("…")
+            self.set_key_btn.setEnabled(False)
+            self.key_display.setText("?")
+        else:
+            self.set_key_btn.setText("Set")
+            self.set_key_btn.setEnabled(True)
+            self._refresh_key_display()
 
 
 # ---------------------------------------------------------------------------
@@ -23,83 +159,85 @@ class HotkeySignals(QObject):
 class ChatOverlay(QMainWindow):
     def __init__(self, config):
         super().__init__()
-        self.config = config
+        self.config       = config
+        self.chat_open    = False
+        self.always_on_top = bool(config.get("always_on_top", True))
+        self.chat_hotkey  = config.get("chat_hotkey", "`")
+        self.opacity_value = float(config.get("opacity", 0.8))
+        self.text_color   = config.get("text_color", "#ffffff")
+        self.accent_color = config.get("accent_color", "#7289da")
+        self._recording   = False
 
-        # State flags
-        self.position_locked  = False   # Insert locks dragging; window stays interactive
-        self.chat_open        = False   # chat_hotkey toggles typing focus
-        self.drag_pos         = QPoint()
+        self._hotkey_signals = HotkeySignals()
+        self._hotkey_signals.toggle_chat.connect(self._toggle_chat)
+        self._hotkey_signals.key_recorded.connect(self._finish_key_recording)
 
-        # Appearance
-        self.opacity_value  = float(self.config.get("opacity", 0.8))
-        self.text_color     = self.config.get("text_color",   "#ffffff")
-        self.accent_color   = self.config.get("accent_color", "#7289da")
-
-        self._init_ui()
-        self._setup_discord()
-        self._setup_hotkeys()
-        self._setup_message_poll()
-
-    # -----------------------------------------------------------------------
-    # UI construction
-    # -----------------------------------------------------------------------
-    def _init_ui(self):
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.WindowTransparentForInput   # start click-through
-        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._build_ui()
+        self._apply_window_flags()
+        self._apply_styles()
+        self._start_listener()
 
+        from discord_bot import DiscordManager
+        self.discord_mgr = DiscordManager(self.config)
+        self.discord_mgr.start_bot()
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._drain_queue)
+        self._poll_timer.start(50)
+
+    # -----------------------------------------------------------------------
+    # UI
+    # -----------------------------------------------------------------------
+    def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(10, 10, 10, 10)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(10, 10, 10, 10)
 
-        # Background frame
         self.bg_frame = QFrame()
         self.bg_frame.setObjectName("bg_frame")
-        bg_layout = QVBoxLayout(self.bg_frame)
-        bg_layout.setContentsMargins(6, 6, 6, 6)
-        bg_layout.setSpacing(4)
-        root_layout.addWidget(self.bg_frame)
+        bg = QVBoxLayout(self.bg_frame)
+        bg.setContentsMargins(0, 0, 0, 6)
+        bg.setSpacing(0)
+        root.addWidget(self.bg_frame)
 
-        # ── Header (drag handle + controls) ─────────────────────────────────
-        header = QHBoxLayout()
+        # ── Drag handle (top strip) ──────────────────────────────────────────
+        self.drag_handle = DragHandle(self)
+        bg.addWidget(self.drag_handle)
 
-        self.drag_icon = QLabel("⠿")
-        self.drag_icon.setToolTip("Drag to move  |  Insert = lock position")
-        self.drag_icon.setStyleSheet("color: #aaaaaa; font-size: 16px; padding: 2px 6px;")
-        header.addWidget(self.drag_icon)
+        # ── Title bar (title + settings + close) ────────────────────────────
+        title_bar = QHBoxLayout()
+        title_bar.setContentsMargins(10, 2, 8, 2)
 
         self.title_label = QLabel("Discord Overlay")
-        self.title_label.setStyleSheet("color: #cccccc; font-size: 11px;")
-        header.addWidget(self.title_label)
+        self.title_label.setStyleSheet("color: #888888; font-size: 11px;")
+        title_bar.addWidget(self.title_label)
+        title_bar.addStretch()
 
-        header.addStretch()
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(22, 22)
+        self.settings_btn.setToolTip("Settings")
+        self.settings_btn.clicked.connect(self._toggle_settings)
+        title_bar.addWidget(self.settings_btn)
 
-        # Opacity slider inline in header
-        header.addWidget(QLabel("💡", styleSheet="color:#aaa;"))
-        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(10, 100)
-        self.opacity_slider.setValue(int(self.opacity_value * 100))
-        self.opacity_slider.setFixedWidth(80)
-        self.opacity_slider.valueChanged.connect(self._update_opacity)
-        header.addWidget(self.opacity_slider)
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(22, 22)
+        close_btn.setObjectName("close_btn")
+        close_btn.clicked.connect(self.close)
+        title_bar.addWidget(close_btn)
 
-        self.close_btn = QPushButton("✕")
-        self.close_btn.setFixedSize(24, 24)
-        self.close_btn.setObjectName("close_btn")
-        self.close_btn.clicked.connect(self.close)
-        header.addWidget(self.close_btn)
+        bg.addLayout(title_bar)
 
-        bg_layout.addLayout(header)
+        # ── Settings panel (hidden by default) ──────────────────────────────
+        self.settings_panel = SettingsPanel(self)
+        self.settings_panel.setVisible(False)
+        bg.addWidget(self.settings_panel)
 
-        # ── Thin separator ───────────────────────────────────────────────────
+        # ── Separator ────────────────────────────────────────────────────────
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: rgba(255,255,255,30);")
-        bg_layout.addWidget(sep)
+        sep.setStyleSheet("background: rgba(255,255,255,18); max-height:1px;")
+        bg.addWidget(sep)
 
         # ── Chat scroll area ─────────────────────────────────────────────────
         self.scroll_area = QScrollArea()
@@ -112,139 +250,183 @@ class ChatOverlay(QMainWindow):
         self.chat_widget.setStyleSheet("background: transparent;")
         self.chat_layout = QVBoxLayout(self.chat_widget)
         self.chat_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.chat_layout.setSpacing(2)
+        self.chat_layout.setSpacing(3)
         self.scroll_area.setWidget(self.chat_widget)
+        bg.addWidget(self.scroll_area, 1)
 
-        bg_layout.addWidget(self.scroll_area, 1)
-
-        # ── Input row ────────────────────────────────────────────────────────
+        # ── Input + resize grip ──────────────────────────────────────────────
         input_row = QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 0, 0)
+        input_row.setContentsMargins(8, 0, 4, 0)
 
         self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("Press ` to chat  •  Enter to send  •  Esc to close")
+        self._refresh_placeholder()
         self.input_box.returnPressed.connect(self._send_message)
         input_row.addWidget(self.input_box)
 
-        size_grip = QSizeGrip(self)
-        input_row.addWidget(size_grip, 0,
-                            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
-        bg_layout.addLayout(input_row)
+        grip = QSizeGrip(self)
+        grip.setFixedSize(14, 14)
+        input_row.addWidget(grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+        bg.addLayout(input_row)
 
-        self._apply_styles()
-        self.resize(420, 480)
+        self.resize(400, 460)
+
+    def _toggle_settings(self):
+        self.settings_panel.setVisible(not self.settings_panel.isVisible())
+        self.adjustSize()
 
     # -----------------------------------------------------------------------
-    # Styling
+    # Window flags (always-on-top + click-through logic)
+    # -----------------------------------------------------------------------
+    def _apply_window_flags(self):
+        flags = Qt.WindowType.FramelessWindowHint
+        if self.always_on_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+            if not self.chat_open:
+                flags |= Qt.WindowType.WindowTransparentForInput
+        self.setWindowFlags(flags)
+        self.show()
+
+    # -----------------------------------------------------------------------
+    # Styles
     # -----------------------------------------------------------------------
     def _apply_styles(self):
         a = int(self.opacity_value * 255)
+        ac = self.accent_color
         self.setStyleSheet(f"""
             #bg_frame {{
-                background-color: rgba(20, 20, 28, {a});
+                background-color: rgba(18, 18, 26, {a});
                 border-radius: 10px;
-                border: 1px solid rgba(255,255,255,25);
+                border: 1px solid rgba(255,255,255,20);
+            }}
+            #drag_handle {{
+                background: rgba(255,255,255,6);
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                border-bottom: 1px solid rgba(255,255,255,10);
+            }}
+            #settings_panel {{
+                background: rgba(0,0,0,60);
+                border-bottom: 1px solid rgba(255,255,255,12);
             }}
             QLabel {{
                 color: {self.text_color};
             }}
             QLineEdit {{
-                background-color: rgba(0,0,0,140);
+                background: rgba(0,0,0,130);
                 color: {self.text_color};
-                border: 1px solid {self.accent_color};
+                border: 1px solid rgba(255,255,255,20);
                 border-radius: 5px;
                 padding: 5px 8px;
                 font-size: 13px;
             }}
+            QLineEdit:focus {{
+                border: 1px solid {ac};
+            }}
             QPushButton {{
                 background: transparent;
                 border: none;
-                color: #aaaaaa;
-                font-size: 13px;
+                color: #888888;
+                font-size: 12px;
             }}
             QPushButton:hover {{
-                background: rgba(255,255,255,25);
+                background: rgba(255,255,255,18);
                 border-radius: 4px;
+                color: #ffffff;
+            }}
+            #close_btn:hover {{
+                background: rgba(220,50,50,180);
+                border-radius: 4px;
+                color: white;
+            }}
+            #toggle_btn {{
+                border-radius: 11px;
+                font-size: 11px;
+                font-weight: bold;
+                color: white;
+            }}
+            #toggle_btn[checked="true"], #toggle_btn:checked {{
+                background: {ac};
+            }}
+            #toggle_btn:!checked {{
+                background: rgba(255,255,255,20);
+                color: #888888;
+            }}
+            #key_display {{
+                background: rgba(255,255,255,12);
+                color: #cccccc;
+                border-radius: 4px;
+                font-size: 11px;
+                font-family: monospace;
+            }}
+            #set_key_btn {{
+                background: rgba(255,255,255,12);
+                border-radius: 4px;
+                color: #aaaaaa;
+                font-size: 11px;
+            }}
+            #set_key_btn:hover {{
+                background: {ac};
                 color: white;
             }}
             QScrollBar:vertical {{
                 border: none;
                 background: transparent;
-                width: 6px;
+                width: 5px;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(255,255,255,45);
-                border-radius: 3px;
+                background: rgba(255,255,255,35);
+                border-radius: 2px;
                 min-height: 20px;
             }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0;
-            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             QSlider::groove:horizontal {{
-                background: rgba(255,255,255,30);
-                height: 4px;
+                background: rgba(255,255,255,25);
+                height: 3px;
                 border-radius: 2px;
             }}
             QSlider::handle:horizontal {{
-                background: {self.accent_color};
+                background: {ac};
                 width: 12px;
                 height: 12px;
                 border-radius: 6px;
-                margin: -4px 0;
+                margin: -5px 0;
             }}
         """)
 
     def _update_opacity(self, value):
         self.opacity_value = value / 100.0
         self._apply_styles()
+        self._save_config()
 
     # -----------------------------------------------------------------------
-    # Discord setup + message polling
+    # Message queue polling
     # -----------------------------------------------------------------------
-    def _setup_discord(self):
-        self.discord_mgr = DiscordManager(self.config)
-        self.discord_mgr.start_bot()
-
-    def _setup_message_poll(self):
-        """Poll the thread-safe queue every 50 ms — eliminates cross-thread signal lag."""
-        self._poll_timer = QTimer(self)
-        self._poll_timer.timeout.connect(self._drain_queue)
-        self._poll_timer.start(50)   # 50 ms = 20 updates/sec, very responsive
-
     def _drain_queue(self):
         q = self.discord_mgr.message_queue
-        # Process up to 10 messages per tick to avoid UI stutter on burst
         for _ in range(10):
             if q.empty():
                 break
             item = q.get_nowait()
             if item[0] == "msg":
-                _, author, content = item
-                self._add_message(author, content)
+                self._add_message(item[1], item[2])
             elif item[0] == "status":
-                _, text = item
-                self._add_status(text)
+                self._add_status(item[1])
 
-    # -----------------------------------------------------------------------
-    # Chat message rendering
-    # -----------------------------------------------------------------------
     def _add_message(self, author, content):
-        bubble = QLabel()
-        bubble.setWordWrap(True)
-        bubble.setTextFormat(Qt.TextFormat.RichText)
-        bubble.setText(
+        lbl = QLabel()
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setText(
             f'<span style="color:{self.accent_color};font-weight:bold;">{author}</span>'
             f'<span style="color:#cccccc;">: {content}</span>'
         )
-        bubble.setStyleSheet("padding: 1px 4px;")
-        self.chat_layout.addWidget(bubble)
-
-        # Scroll to bottom AFTER the layout has updated
+        lbl.setStyleSheet("padding: 1px 8px;")
+        self.chat_layout.addWidget(lbl)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _add_status(self, text):
         lbl = QLabel(f"<i>{text}</i>")
-        lbl.setStyleSheet("color: #666666; padding: 1px 4px; font-size: 11px;")
+        lbl.setStyleSheet("color: #555555; padding: 1px 8px; font-size: 11px;")
         self.chat_layout.addWidget(lbl)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
@@ -253,93 +435,30 @@ class ChatOverlay(QMainWindow):
         sb.setValue(sb.maximum())
 
     # -----------------------------------------------------------------------
-    # Sending
+    # Send message
     # -----------------------------------------------------------------------
     def _send_message(self):
         content = self.input_box.text().strip()
         if content:
             self.discord_mgr.send_webhook_message(content)
             self.input_box.clear()
-        # Auto-close chat after sending (feels natural for gaming)
         self._close_chat()
 
     # -----------------------------------------------------------------------
-    # Hotkey setup
+    # Chat open / close
     # -----------------------------------------------------------------------
-    def _setup_hotkeys(self):
-        self._hotkey_signals = HotkeySignals()
-        self._hotkey_signals.lock_position.connect(self._toggle_position_lock)
-        self._hotkey_signals.toggle_chat.connect(self._toggle_chat)
-
-        chat_key_str = self.config.get("chat_hotkey", "`").lower()
-
-        def on_press(key):
-            # Insert → lock/unlock position
-            if key == keyboard.Key.insert:
-                self._hotkey_signals.lock_position.emit()
-                return
-
-            # Escape → close chat if open
-            if key == keyboard.Key.esc:
-                if self.chat_open:
-                    self._hotkey_signals.toggle_chat.emit()
-                return
-
-            # Chat hotkey (backtick / configurable)
-            try:
-                char = key.char
-            except AttributeError:
-                char = None
-
-            if char == chat_key_str:
-                self._hotkey_signals.toggle_chat.emit()
-
-        self._keyboard_listener = keyboard.Listener(on_press=on_press)
-        self._keyboard_listener.start()
-
-    # -----------------------------------------------------------------------
-    # Hotkey actions
-    # -----------------------------------------------------------------------
-    def _toggle_position_lock(self):
-        """Insert — lock/unlock dragging. Window stays interactive regardless."""
-        self.position_locked = not self.position_locked
-        if self.position_locked:
-            self.title_label.setText("Discord Overlay  🔒")
-            self.drag_icon.setStyleSheet("color: #555555; font-size: 16px; padding: 2px 6px;")
-        else:
-            self.title_label.setText("Discord Overlay")
-            self.drag_icon.setStyleSheet("color: #aaaaaa; font-size: 16px; padding: 2px 6px;")
-
     def _open_chat(self):
-        """Make window interactive + focus input box for typing."""
         self.chat_open = True
-        # Remove click-through flag
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.show()
+        self._apply_window_flags()
         self.input_box.setFocus()
         self.activateWindow()
-        self.input_box.setStyleSheet(
-            self.input_box.styleSheet() +
-            f"; border: 1px solid {self.accent_color};"
-        )
         self.title_label.setText("Discord Overlay  💬")
 
     def _close_chat(self):
-        """Unfocus input, restore click-through."""
         self.chat_open = False
         self.input_box.clearFocus()
-        # Re-apply click-through
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.WindowTransparentForInput
-        )
-        self.show()
-        lock_icon = "  🔒" if self.position_locked else ""
-        self.title_label.setText(f"Discord Overlay{lock_icon}")
+        self._apply_window_flags()
+        self.title_label.setText("Discord Overlay")
 
     def _toggle_chat(self):
         if self.chat_open:
@@ -347,30 +466,109 @@ class ChatOverlay(QMainWindow):
         else:
             self._open_chat()
 
-    # -----------------------------------------------------------------------
-    # Dragging (header area only, respects position lock)
-    # -----------------------------------------------------------------------
-    def mousePressEvent(self, event):
-        if (event.button() == Qt.MouseButton.LeftButton
-                and not self.position_locked
-                and event.position().y() < 40):
-            self.drag_pos = event.globalPosition().toPoint()
+    def _refresh_placeholder(self):
+        k = self.chat_hotkey
+        self.input_box.setPlaceholderText(
+            f"Press {k!r} to chat  •  Enter to send  •  Esc to dismiss"
+        )
 
-    def mouseMoveEvent(self, event):
-        if not self.drag_pos.isNull() and not self.position_locked:
-            delta = event.globalPosition().toPoint() - self.drag_pos
-            self.move(self.pos() + delta)
-            self.drag_pos = event.globalPosition().toPoint()
+    # -----------------------------------------------------------------------
+    # Hotkey listener
+    # -----------------------------------------------------------------------
+    def _start_listener(self):
+        self._listener = keyboard.Listener(on_press=self._on_key)
+        self._listener.daemon = True
+        self._listener.start()
 
-    def mouseReleaseEvent(self, event):
-        self.drag_pos = QPoint()
+    def _restart_listener(self):
+        if hasattr(self, "_listener"):
+            self._listener.stop()
+        self._start_listener()
+
+    def _on_key(self, key):
+        # ── Recording mode: capture next key ────────────────────────────────
+        if self._recording:
+            # Ignore pure modifier presses
+            if isinstance(key, keyboard.Key) and key in (
+                keyboard.Key.shift, keyboard.Key.shift_r,
+                keyboard.Key.ctrl, keyboard.Key.ctrl_r,
+                keyboard.Key.alt, keyboard.Key.alt_r,
+                keyboard.Key.cmd, keyboard.Key.cmd_r,
+            ):
+                return
+            try:
+                char = key.char
+                if char:
+                    self._hotkey_signals.key_recorded.emit(char)
+            except AttributeError:
+                # Special key (F1, Tab, etc.) — use its name
+                name = key.name
+                self._hotkey_signals.key_recorded.emit(f"<{name}>")
+            return
+
+        # ── Normal mode ──────────────────────────────────────────────────────
+        # Escape → close chat
+        if key == keyboard.Key.esc and self.chat_open:
+            self._hotkey_signals.toggle_chat.emit()
+            return
+
+        # Chat hotkey
+        try:
+            char = key.char
+        except AttributeError:
+            char = None
+
+        hk = self.chat_hotkey
+        if hk.startswith("<") and hk.endswith(">"):
+            # Special key binding
+            try:
+                if key.name == hk[1:-1]:
+                    self._hotkey_signals.toggle_chat.emit()
+            except AttributeError:
+                pass
+        elif char == hk:
+            self._hotkey_signals.toggle_chat.emit()
+
+    # -----------------------------------------------------------------------
+    # Key recording flow
+    # -----------------------------------------------------------------------
+    def _start_key_recording(self):
+        self._recording = True
+        self.settings_panel.set_recording_state(True)
+
+    def _finish_key_recording(self, key_str: str):
+        self._recording = False
+        self.chat_hotkey = key_str
+        self.config["chat_hotkey"] = key_str
+        self._save_config()
+        self.settings_panel.set_recording_state(False)
+        self._refresh_placeholder()
+        # Listener doesn't need restart — it reads self.chat_hotkey dynamically
+
+    # -----------------------------------------------------------------------
+    # Config persistence
+    # -----------------------------------------------------------------------
+    def _save_config(self):
+        self.config["opacity"]      = self.opacity_value
+        self.config["chat_hotkey"]  = self.chat_hotkey
+        self.config["always_on_top"] = self.always_on_top
+        try:
+            if getattr(sys, 'frozen', False):
+                base = os.path.dirname(sys.executable)
+            else:
+                base = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(base, "config.json"), "w") as f:
+                json.dump(self.config, f, indent=4)
+        except Exception as e:
+            print(f"Could not save config: {e}")
 
     # -----------------------------------------------------------------------
     # Cleanup
     # -----------------------------------------------------------------------
     def closeEvent(self, event):
         self._poll_timer.stop()
-        self._keyboard_listener.stop()
+        if hasattr(self, "_listener"):
+            self._listener.stop()
         self.discord_mgr.stop_bot()
         super().closeEvent(event)
 
@@ -384,26 +582,24 @@ def load_config():
     else:
         base = os.path.dirname(os.path.abspath(__file__))
 
-    config_path = os.path.join(base, "config.json")
-
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
+    path = os.path.join(base, "config.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
 
-    # Generate default config next to exe if missing
     default = {
-        "username":    "Player1",
-        "bot_token":   "YOUR_BOT_TOKEN_HERE",
-        "webhook_url": "YOUR_WEBHOOK_URL_HERE",
-        "channel_id":  "123456789012345678",
-        "hotkey":      "insert",
-        "chat_hotkey": "`",
-        "opacity":     0.8,
-        "text_color":  "#ffffff",
-        "accent_color":"#7289da"
+        "username":     "Player1",
+        "bot_token":    "YOUR_BOT_TOKEN_HERE",
+        "webhook_url":  "YOUR_WEBHOOK_URL_HERE",
+        "channel_id":   "123456789012345678",
+        "chat_hotkey":  "`",
+        "always_on_top": True,
+        "opacity":      0.8,
+        "text_color":   "#ffffff",
+        "accent_color": "#7289da"
     }
     try:
-        with open(config_path, "w") as f:
+        with open(path, "w") as f:
             json.dump(default, f, indent=4)
     except Exception:
         pass

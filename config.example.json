@@ -3,8 +3,8 @@
     "bot_token": "PASTE_YOUR_BOT_TOKEN_HERE",
     "webhook_url": "PASTE_YOUR_WEBHOOK_URL_HERE",
     "channel_id": "PASTE_YOUR_CHANNEL_ID_HERE",
-    "hotkey": "insert",
     "chat_hotkey": "`",
+    "always_on_top": true,
     "opacity": 0.8,
     "text_color": "#ffffff",
     "accent_color": "#7289da"
