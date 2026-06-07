@@ -23,21 +23,28 @@ THEMES = {
 }
 
 ACCENT_PRESETS = [
-    "#7289da",  # Discord blue
-    "#5865f2",  # Blurple
-    "#00b4d8",  # Cyan
-    "#4ade80",  # Green
-    "#fb923c",  # Orange
-    "#f472b6",  # Pink
-    "#f87171",  # Red
-    "#a78bfa",  # Purple
+    "#7289da", "#5865f2", "#00b4d8", "#4ade80",
+    "#fb923c", "#f472b6", "#f87171", "#a78bfa",
 ]
 
 FONT_SIZES = {"S": 11, "M": 13, "L": 16}
 
+# Keys that should be applied to config.json if missing (backward compat)
+CONFIG_DEFAULTS = {
+    "chat_hotkey":   "`",
+    "always_on_top": True,
+    "theme":         "Discord",
+    "accent_color":  "#7289da",
+    "text_color":    "#ffffff",
+    "bg_rgb":        [20, 20, 28],
+    "opacity":       0.8,
+    "font_size":     13,
+    "corner_radius": 10,
+}
+
 
 # ---------------------------------------------------------------------------
-# Signal bridge
+# Signal bridge  (pynput → Qt, thread-safe)
 # ---------------------------------------------------------------------------
 class HotkeySignals(QObject):
     toggle_chat  = pyqtSignal()
@@ -45,22 +52,39 @@ class HotkeySignals(QObject):
 
 
 # ---------------------------------------------------------------------------
-# Dedicated drag handle
+# Title bar  (also acts as drag handle — no separate grey strip)
 # ---------------------------------------------------------------------------
-class DragHandle(QFrame):
+class TitleBar(QFrame):
+    """Transparent title bar that the user can drag to move the window."""
+
     def __init__(self, parent_window, parent=None):
         super().__init__(parent)
         self._win    = parent_window
         self._origin = QPoint()
+        self.setObjectName("title_bar")
+        # Use move-cursor everywhere EXCEPT over the buttons
         self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
-        self.setFixedHeight(20)
-        self.setObjectName("drag_handle")
-        self.setToolTip("Drag to move")
+
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        dots = QLabel("· · · · · · · · · · · ·")
-        dots.setStyleSheet("color: rgba(255,255,255,35); font-size: 9px; letter-spacing: 3px;")
-        lay.addWidget(dots, alignment=Qt.AlignmentFlag.AlignCenter)
+        lay.setContentsMargins(10, 5, 8, 5)
+        lay.setSpacing(4)
+
+        self.title_label = QLabel("Discord Overlay")
+        self.title_label.setObjectName("title_label")
+        lay.addWidget(self.title_label)
+        lay.addStretch()
+
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(22, 22)
+        self.settings_btn.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.settings_btn.setToolTip("Settings")
+        lay.addWidget(self.settings_btn)
+
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setFixedSize(22, 22)
+        self.close_btn.setObjectName("close_btn")
+        self.close_btn.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        lay.addWidget(self.close_btn)
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
@@ -77,13 +101,19 @@ class DragHandle(QFrame):
 
 
 # ---------------------------------------------------------------------------
-# Section header helper
+# Helper widgets
 # ---------------------------------------------------------------------------
+def _separator():
+    sep = QFrame()
+    sep.setFrameShape(QFrame.Shape.HLine)
+    sep.setStyleSheet("background: rgba(255,255,255,12); max-height: 1px;")
+    return sep
+
 def _section_header(text):
     lbl = QLabel(text)
     lbl.setStyleSheet(
-        "color: rgba(255,255,255,35); font-size: 9px; font-weight: bold; "
-        "letter-spacing: 2px; padding: 4px 0 2px 0;"
+        "color: rgba(255,255,255,30); font-size: 9px; font-weight: bold; "
+        "letter-spacing: 2px; padding: 6px 0 2px 0;"
     )
     return lbl
 
@@ -103,7 +133,7 @@ class SettingsPanel(QFrame):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 6, 10, 10)
+        root.setContentsMargins(10, 4, 10, 10)
         root.setSpacing(0)
 
         # ══════════════════════════ SYSTEM ════════════════════════════════
@@ -161,28 +191,19 @@ class SettingsPanel(QFrame):
         op_row.addWidget(self.opacity_slider)
         root.addLayout(op_row)
 
-        root.addSpacing(6)
+        root.addSpacing(4)
         root.addWidget(_separator())
 
         # ══════════════════════ APPEARANCE ════════════════════════════════
         root.addWidget(_section_header("APPEARANCE"))
 
         # Themes
-        theme_label_row = QHBoxLayout()
-        theme_label_row.addWidget(QLabel("🎨"))
-        tl = QLabel("Theme")
-        tl.setStyleSheet("color:#cccccc; font-size:12px;")
-        theme_label_row.addWidget(tl)
-        theme_label_row.addStretch()
-        root.addLayout(theme_label_row)
-
+        root.addWidget(QLabel("🎨  Theme", styleSheet="color:#cccccc;font-size:12px;"))
         theme_grid = QGridLayout()
         theme_grid.setSpacing(4)
         for i, (name, t) in enumerate(THEMES.items()):
-            r, g, b = t["bg"]
             btn = QPushButton(name)
             btn.setFixedHeight(22)
-            btn.setObjectName(f"theme_{name}")
             btn.clicked.connect(lambda _, n=name: self.overlay._apply_theme(n))
             self._theme_btns[name] = btn
             theme_grid.addWidget(btn, i // 3, i % 3)
@@ -191,15 +212,8 @@ class SettingsPanel(QFrame):
 
         root.addSpacing(6)
 
-        # Accent color
-        accent_label_row = QHBoxLayout()
-        accent_label_row.addWidget(QLabel("🖌"))
-        al = QLabel("Accent")
-        al.setStyleSheet("color:#cccccc; font-size:12px;")
-        accent_label_row.addWidget(al)
-        accent_label_row.addStretch()
-        root.addLayout(accent_label_row)
-
+        # Accent swatches
+        root.addWidget(QLabel("🖌  Accent", styleSheet="color:#cccccc;font-size:12px;"))
         swatch_row = QHBoxLayout()
         swatch_row.setSpacing(4)
         for color in ACCENT_PRESETS:
@@ -208,7 +222,6 @@ class SettingsPanel(QFrame):
             sw.clicked.connect(lambda _, c=color: self.overlay._set_accent(c))
             self._accent_btns[color] = sw
             swatch_row.addWidget(sw)
-        # Custom color picker (rainbow "+")
         self.custom_color_btn = QPushButton("+")
         self.custom_color_btn.setFixedSize(20, 20)
         self.custom_color_btn.setObjectName("custom_color_btn")
@@ -221,20 +234,12 @@ class SettingsPanel(QFrame):
         root.addSpacing(6)
 
         # Font size
-        size_label_row = QHBoxLayout()
-        size_label_row.addWidget(QLabel("🔤"))
-        sl = QLabel("Text Size")
-        sl.setStyleSheet("color:#cccccc; font-size:12px;")
-        size_label_row.addWidget(sl)
-        size_label_row.addStretch()
-        root.addLayout(size_label_row)
-
+        root.addWidget(QLabel("🔤  Text Size", styleSheet="color:#cccccc;font-size:12px;"))
         size_row = QHBoxLayout()
         size_row.setSpacing(4)
         for label, size in FONT_SIZES.items():
             btn = QPushButton(label)
             btn.setFixedSize(30, 22)
-            btn.setObjectName(f"size_{label}")
             btn.clicked.connect(lambda _, s=size: self.overlay._set_font_size(s))
             self._size_btns[size] = btn
             size_row.addWidget(btn)
@@ -246,10 +251,8 @@ class SettingsPanel(QFrame):
 
         # Corner radius
         radius_row = QHBoxLayout()
-        radius_row.addWidget(QLabel("⬛"))
-        rl = QLabel("Corners")
-        rl.setStyleSheet("color:#cccccc; font-size:12px;")
-        radius_row.addWidget(rl)
+        radius_row.addWidget(QLabel("⬛", styleSheet="color:#cccccc;font-size:12px;"))
+        radius_row.addWidget(QLabel("Corners", styleSheet="color:#cccccc;font-size:12px;"))
         radius_row.addStretch()
         self.radius_slider = QSlider(Qt.Orientation.Horizontal)
         self.radius_slider.setRange(0, 20)
@@ -267,19 +270,19 @@ class SettingsPanel(QFrame):
         self._refresh_aot()
 
     def _refresh_aot(self):
-        on = self.aot_btn.isChecked()
-        self.aot_btn.setText("ON" if on else "OFF")
+        self.aot_btn.setText("ON" if self.aot_btn.isChecked() else "OFF")
 
     def _refresh_key(self):
         k = self.overlay.chat_hotkey
-        self.key_display.setText(k if len(k) <= 3 else k[1:-1][:3])
+        display = k if len(k) <= 3 else k[1:-1][:4]
+        self.key_display.setText(display)
 
     def _refresh_theme_btns(self):
         current = self.overlay.current_theme
         for name, t in THEMES.items():
             r, g, b = t["bg"]
             selected = (name == current)
-            border = f"2px solid {t['accent']}" if selected else f"1px solid rgba(255,255,255,20)"
+            border = f"2px solid {t['accent']}" if selected else "1px solid rgba(255,255,255,18)"
             self._theme_btns[name].setStyleSheet(f"""
                 QPushButton {{
                     background: rgb({r},{g},{b});
@@ -290,9 +293,7 @@ class SettingsPanel(QFrame):
                     font-weight: {'bold' if selected else 'normal'};
                     padding: 0 4px;
                 }}
-                QPushButton:hover {{
-                    border: 2px solid {t['accent']};
-                }}
+                QPushButton:hover {{ border: 2px solid {t['accent']}; }}
             """)
 
     def _refresh_accent_btns(self):
@@ -303,29 +304,26 @@ class SettingsPanel(QFrame):
                 QPushButton {{
                     background: {color};
                     border-radius: 4px;
-                    border: {'2px solid white' if selected else '1px solid rgba(255,255,255,25)'};
+                    border: {'2px solid white' if selected else '1px solid rgba(255,255,255,20)'};
                 }}
                 QPushButton:hover {{ border: 2px solid white; }}
             """)
 
     def _refresh_size_btns(self):
         current = self.overlay.font_size
+        ac = self.overlay.accent_color
         for size, btn in self._size_btns.items():
             selected = (size == current)
-            ac = self.overlay.accent_color
             btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: {ac if selected else 'rgba(255,255,255,12)'};
+                    background: {ac if selected else 'rgba(255,255,255,10)'};
                     border-radius: 4px;
-                    color: {'white' if selected else '#888'};
+                    color: {'white' if selected else '#777'};
                     font-size: 11px;
                     font-weight: {'bold' if selected else 'normal'};
                     border: none;
                 }}
-                QPushButton:hover {{
-                    background: {ac};
-                    color: white;
-                }}
+                QPushButton:hover {{ background: {ac}; color: white; }}
             """)
 
     def set_recording_state(self, recording: bool):
@@ -339,13 +337,6 @@ class SettingsPanel(QFrame):
             self._refresh_key()
 
 
-def _separator():
-    sep = QFrame()
-    sep.setFrameShape(QFrame.Shape.HLine)
-    sep.setStyleSheet("background: rgba(255,255,255,12); max-height: 1px;")
-    return sep
-
-
 # ---------------------------------------------------------------------------
 # Main overlay
 # ---------------------------------------------------------------------------
@@ -357,12 +348,12 @@ class ChatOverlay(QMainWindow):
         # State
         self.chat_open     = False
         self.always_on_top = bool(config.get("always_on_top", True))
-        self.chat_hotkey   = config.get("chat_hotkey", "`")
+        self.chat_hotkey   = config.get("chat_hotkey",   "`")
         self.opacity_value = float(config.get("opacity", 0.8))
-        self.text_color    = config.get("text_color",   "#ffffff")
-        self.accent_color  = config.get("accent_color", "#7289da")
-        self.current_theme = config.get("theme",        "Discord")
-        self.font_size     = int(config.get("font_size",  13))
+        self.text_color    = config.get("text_color",    "#ffffff")
+        self.accent_color  = config.get("accent_color",  "#7289da")
+        self.current_theme = config.get("theme",         "Discord")
+        self.font_size     = int(config.get("font_size",     13))
         self.corner_radius = int(config.get("corner_radius", 10))
         self.bg_rgb        = tuple(config.get("bg_rgb", [20, 20, 28]))
         self._recording    = False
@@ -385,7 +376,7 @@ class ChatOverlay(QMainWindow):
         self._poll_timer.start(50)
 
     # -----------------------------------------------------------------------
-    # UI
+    # UI construction
     # -----------------------------------------------------------------------
     def _build_ui(self):
         central = QWidget()
@@ -400,43 +391,29 @@ class ChatOverlay(QMainWindow):
         bg.setSpacing(0)
         root.addWidget(self.bg_frame)
 
-        # Drag handle
-        self.drag_handle = DragHandle(self)
-        bg.addWidget(self.drag_handle)
+        # ── Title bar (doubles as drag handle — no separate strip) ───────────
+        self.title_bar = TitleBar(self)
+        self.title_bar.settings_btn.clicked.connect(self._toggle_settings)
+        self.title_bar.close_btn.clicked.connect(self.close)
+        bg.addWidget(self.title_bar)
 
-        # Title bar
-        title_bar = QHBoxLayout()
-        title_bar.setContentsMargins(10, 2, 8, 2)
-        self.title_label = QLabel("Discord Overlay")
-        self.title_label.setStyleSheet("color: #666666; font-size: 11px;")
-        title_bar.addWidget(self.title_label)
-        title_bar.addStretch()
-        self.settings_btn = QPushButton("⚙")
-        self.settings_btn.setFixedSize(22, 22)
-        self.settings_btn.setToolTip("Settings")
-        self.settings_btn.clicked.connect(self._toggle_settings)
-        title_bar.addWidget(self.settings_btn)
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(22, 22)
-        close_btn.setObjectName("close_btn")
-        close_btn.clicked.connect(self.close)
-        title_bar.addWidget(close_btn)
-        bg.addLayout(title_bar)
-
-        # Settings panel
+        # ── Settings panel (hidden by default) ───────────────────────────────
         self.settings_panel = SettingsPanel(self)
         self.settings_panel.setVisible(False)
         bg.addWidget(self.settings_panel)
 
-        # Separator
+        # ── Thin separator ────────────────────────────────────────────────────
         bg.addWidget(_separator())
 
-        # Chat area
+        # ── Chat scroll area ──────────────────────────────────────────────────
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setStyleSheet("background: transparent;")
+        # Hide scrollbar — scroll wheel still works; auto-scroll keeps latest visible
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         self.chat_widget = QWidget()
         self.chat_widget.setStyleSheet("background: transparent;")
         self.chat_layout = QVBoxLayout(self.chat_widget)
@@ -445,7 +422,7 @@ class ChatOverlay(QMainWindow):
         self.scroll_area.setWidget(self.chat_widget)
         bg.addWidget(self.scroll_area, 1)
 
-        # Input + grip
+        # ── Input row + resize grip ───────────────────────────────────────────
         input_row = QHBoxLayout()
         input_row.setContentsMargins(8, 0, 4, 0)
         self.input_box = QLineEdit()
@@ -463,7 +440,7 @@ class ChatOverlay(QMainWindow):
         self.settings_panel.setVisible(not self.settings_panel.isVisible())
 
     # -----------------------------------------------------------------------
-    # Window flags
+    # Window flags (always-on-top + click-through)
     # -----------------------------------------------------------------------
     def _apply_window_flags(self):
         flags = Qt.WindowType.FramelessWindowHint
@@ -475,7 +452,7 @@ class ChatOverlay(QMainWindow):
         self.show()
 
     # -----------------------------------------------------------------------
-    # Styles  (all dynamic values flow through here)
+    # Stylesheet (all dynamic values go through here)
     # -----------------------------------------------------------------------
     def _apply_styles(self):
         r, g, b = self.bg_rgb
@@ -488,23 +465,27 @@ class ChatOverlay(QMainWindow):
             #bg_frame {{
                 background-color: rgba({r},{g},{b},{a});
                 border-radius: {cr}px;
-                border: 1px solid rgba(255,255,255,18);
+                border: 1px solid rgba(255,255,255,15);
             }}
-            #drag_handle {{
-                background: rgba(255,255,255,5);
+            #title_bar {{
+                background: transparent;
                 border-top-left-radius: {cr}px;
                 border-top-right-radius: {cr}px;
-                border-bottom: 1px solid rgba(255,255,255,8);
+            }}
+            #title_label {{
+                color: rgba(255,255,255,35);
+                font-size: 11px;
+                background: transparent;
             }}
             #settings_panel {{
-                background: rgba(0,0,0,50);
+                background: rgba(0,0,0,45);
                 border-bottom: 1px solid rgba(255,255,255,10);
             }}
-            QLabel {{ color: {tc}; }}
+            QLabel {{ color: {tc}; background: transparent; }}
             QLineEdit {{
-                background: rgba(0,0,0,120);
+                background: rgba(0,0,0,110);
                 color: {tc};
-                border: 1px solid rgba(255,255,255,18);
+                border: 1px solid rgba(255,255,255,15);
                 border-radius: 5px;
                 padding: 5px 8px;
                 font-size: {self.font_size}px;
@@ -513,16 +494,16 @@ class ChatOverlay(QMainWindow):
             QPushButton {{
                 background: transparent;
                 border: none;
-                color: #777777;
+                color: rgba(255,255,255,40);
                 font-size: 12px;
             }}
             QPushButton:hover {{
-                background: rgba(255,255,255,15);
+                background: rgba(255,255,255,12);
                 border-radius: 4px;
-                color: #ffffff;
+                color: white;
             }}
             #close_btn:hover {{
-                background: rgba(220,50,50,160);
+                background: rgba(220,50,50,150);
                 border-radius: 4px;
                 color: white;
             }}
@@ -532,19 +513,19 @@ class ChatOverlay(QMainWindow):
                 font-weight: bold;
                 color: white;
             }}
-            #toggle_btn:checked   {{ background: {ac}; }}
-            #toggle_btn:!checked  {{ background: rgba(255,255,255,18); color: #666; }}
+            #toggle_btn:checked  {{ background: {ac}; }}
+            #toggle_btn:!checked {{ background: rgba(255,255,255,15); color: #555; }}
             #key_display {{
-                background: rgba(255,255,255,10);
-                color: #cccccc;
+                background: rgba(255,255,255,8);
+                color: #aaaaaa;
                 border-radius: 4px;
                 font-size: 11px;
                 font-family: monospace;
             }}
             #set_key_btn {{
-                background: rgba(255,255,255,10);
+                background: rgba(255,255,255,8);
                 border-radius: 4px;
-                color: #aaaaaa;
+                color: #888888;
                 font-size: 11px;
             }}
             #set_key_btn:hover {{ background: {ac}; color: white; }}
@@ -557,18 +538,10 @@ class ChatOverlay(QMainWindow):
                 font-size: 13px;
                 font-weight: bold;
             }}
-            QScrollBar:vertical {{
-                border: none; background: transparent; width: 5px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: rgba(255,255,255,30);
-                border-radius: 2px;
-                min-height: 20px;
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
             QSlider::groove:horizontal {{
-                background: rgba(255,255,255,20);
-                height: 3px; border-radius: 2px;
+                background: rgba(255,255,255,18);
+                height: 3px;
+                border-radius: 2px;
             }}
             QSlider::handle:horizontal {{
                 background: {ac};
@@ -578,7 +551,7 @@ class ChatOverlay(QMainWindow):
         """)
 
     # -----------------------------------------------------------------------
-    # Appearance setters  (each saves config + refreshes styles/panel)
+    # Appearance setters
     # -----------------------------------------------------------------------
     def _apply_theme(self, name: str):
         if name not in THEMES:
@@ -595,8 +568,8 @@ class ChatOverlay(QMainWindow):
         self._save_config()
 
     def _set_accent(self, color: str):
-        self.accent_color = color
-        self.current_theme = ""          # custom accent → deselect theme
+        self.accent_color  = color
+        self.current_theme = ""
         self._apply_styles()
         self.settings_panel._refresh_theme_btns()
         self.settings_panel._refresh_accent_btns()
@@ -604,9 +577,7 @@ class ChatOverlay(QMainWindow):
         self._save_config()
 
     def _pick_custom_accent(self):
-        color = QColorDialog.getColor(
-            QColor(self.accent_color), self, "Pick accent colour"
-        )
+        color = QColorDialog.getColor(QColor(self.accent_color), self, "Pick accent colour")
         if color.isValid():
             self._set_accent(color.name())
 
@@ -627,7 +598,7 @@ class ChatOverlay(QMainWindow):
         self._save_config()
 
     # -----------------------------------------------------------------------
-    # Message queue
+    # Message queue polling
     # -----------------------------------------------------------------------
     def _drain_queue(self):
         q = self.discord_mgr.message_queue
@@ -651,43 +622,49 @@ class ChatOverlay(QMainWindow):
         )
         lbl.setStyleSheet("padding: 1px 8px;")
         self.chat_layout.addWidget(lbl)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+        # Always snap to latest — regardless of typing state
+        QTimer.singleShot(0,  self._scroll_to_bottom)
+        QTimer.singleShot(50, self._scroll_to_bottom)   # second pass after layout settles
 
     def _add_status(self, text):
         lbl = QLabel(f"<i>{text}</i>")
         lbl.setStyleSheet("color: #444444; padding: 1px 8px; font-size: 11px;")
         self.chat_layout.addWidget(lbl)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+        QTimer.singleShot(0,  self._scroll_to_bottom)
+        QTimer.singleShot(50, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self):
         sb = self.scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     # -----------------------------------------------------------------------
-    # Send
+    # Sending  — NO auto-close after Enter; user controls when to close chat
     # -----------------------------------------------------------------------
     def _send_message(self):
         content = self.input_box.text().strip()
         if content:
             self.discord_mgr.send_webhook_message(content)
             self.input_box.clear()
-        self._close_chat()
+        # ↑ Intentionally NOT calling _close_chat() here.
+        # User presses Esc or the chat hotkey again to dismiss.
 
     # -----------------------------------------------------------------------
-    # Chat open/close
+    # Chat open / close
     # -----------------------------------------------------------------------
     def _open_chat(self):
         self.chat_open = True
-        self._apply_window_flags()
-        self.input_box.setFocus()
-        self.activateWindow()
-        self.title_label.setText("Discord Overlay  💬")
+        self._apply_window_flags()   # removes click-through, calls show()
+        self.title_bar.title_label.setText("Discord Overlay  💬")
+        # Scroll to latest so user sees newest messages when they open chat
+        QTimer.singleShot(0,   self._scroll_to_bottom)
+        # Grab focus reliably: defer until after window is fully shown & painted
+        QTimer.singleShot(80,  self._grab_focus)
 
     def _close_chat(self):
         self.chat_open = False
         self.input_box.clearFocus()
-        self._apply_window_flags()
-        self.title_label.setText("Discord Overlay")
+        self._apply_window_flags()   # re-applies click-through
+        self.title_bar.title_label.setText("Discord Overlay")
 
     def _toggle_chat(self):
         if self.chat_open:
@@ -695,14 +672,27 @@ class ChatOverlay(QMainWindow):
         else:
             self._open_chat()
 
+    def _grab_focus(self):
+        """Force keyboard focus into the input box — works even from a game."""
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            ctypes.windll.user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+            ctypes.windll.user32.SetForegroundWindow(hwnd)    # steal foreground
+        except Exception:
+            pass
+        self.raise_()
+        self.activateWindow()
+        self.input_box.setFocus()
+
     def _refresh_placeholder(self):
         k = self.chat_hotkey
         self.input_box.setPlaceholderText(
-            f"Press {k!r} to chat  •  Enter to send  •  Esc to close"
+            f"Press {k!r} to open  •  Enter sends  •  Esc or {k!r} to close"
         )
 
     # -----------------------------------------------------------------------
-    # Hotkey listener
+    # Hotkey listener  (pynput, background thread)
     # -----------------------------------------------------------------------
     def _start_listener(self):
         self._listener = keyboard.Listener(on_press=self._on_key)
@@ -710,12 +700,13 @@ class ChatOverlay(QMainWindow):
         self._listener.start()
 
     def _on_key(self, key):
+        # ── Key-recording mode ───────────────────────────────────────────────
         if self._recording:
             if isinstance(key, keyboard.Key) and key in (
-                keyboard.Key.shift, keyboard.Key.shift_r,
-                keyboard.Key.ctrl,  keyboard.Key.ctrl_r,
-                keyboard.Key.alt,   keyboard.Key.alt_r,
-                keyboard.Key.cmd,   keyboard.Key.cmd_r,
+                keyboard.Key.shift,   keyboard.Key.shift_r,
+                keyboard.Key.ctrl,    keyboard.Key.ctrl_r,
+                keyboard.Key.alt,     keyboard.Key.alt_r,
+                keyboard.Key.cmd,     keyboard.Key.cmd_r,
             ):
                 return
             try:
@@ -726,6 +717,7 @@ class ChatOverlay(QMainWindow):
                 self._hotkey_signals.key_recorded.emit(f"<{key.name}>")
             return
 
+        # ── Normal mode ──────────────────────────────────────────────────────
         if key == keyboard.Key.esc and self.chat_open:
             self._hotkey_signals.toggle_chat.emit()
             return
@@ -750,8 +742,8 @@ class ChatOverlay(QMainWindow):
         self.settings_panel.set_recording_state(True)
 
     def _finish_key_recording(self, key_str: str):
-        self._recording    = False
-        self.chat_hotkey   = key_str
+        self._recording  = False
+        self.chat_hotkey = key_str
         self.config["chat_hotkey"] = key_str
         self.settings_panel.set_recording_state(False)
         self._refresh_placeholder()
@@ -792,38 +784,47 @@ class ChatOverlay(QMainWindow):
 
 
 # ---------------------------------------------------------------------------
-# Config loader
+# Config loader  (with migration for older config.json versions)
 # ---------------------------------------------------------------------------
 def load_config():
     base = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
             else os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(base, "config.json")
 
+    config = {}
     if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
+        try:
+            with open(path, "r") as f:
+                config = json.load(f)
+        except Exception:
+            config = {}
 
-    default = {
-        "username":      "Player1",
-        "bot_token":     "YOUR_BOT_TOKEN_HERE",
-        "webhook_url":   "YOUR_WEBHOOK_URL_HERE",
-        "channel_id":    "123456789012345678",
-        "chat_hotkey":   "`",
-        "always_on_top": True,
-        "theme":         "Discord",
-        "accent_color":  "#7289da",
-        "text_color":    "#ffffff",
-        "bg_rgb":        [20, 20, 28],
-        "opacity":       0.8,
-        "font_size":     13,
-        "corner_radius": 10,
-    }
-    try:
-        with open(path, "w") as f:
-            json.dump(default, f, indent=4)
-    except Exception:
-        pass
-    return default
+    # Apply defaults for any missing keys (handles old config.json versions)
+    changed = False
+    for key, val in CONFIG_DEFAULTS.items():
+        if key not in config:
+            config[key] = val
+            changed = True
+
+    # Bootstrap required Discord fields if totally missing
+    for key, placeholder in [
+        ("username",    "Player1"),
+        ("bot_token",   "YOUR_BOT_TOKEN_HERE"),
+        ("webhook_url", "YOUR_WEBHOOK_URL_HERE"),
+        ("channel_id",  "123456789012345678"),
+    ]:
+        if key not in config:
+            config[key] = placeholder
+            changed = True
+
+    if changed:
+        try:
+            with open(path, "w") as f:
+                json.dump(config, f, indent=4)
+        except Exception:
+            pass
+
+    return config
 
 
 # ---------------------------------------------------------------------------
