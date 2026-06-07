@@ -5,7 +5,11 @@
     "channel_id": "PASTE_YOUR_CHANNEL_ID_HERE",
     "chat_hotkey": "`",
     "always_on_top": true,
-    "opacity": 0.8,
+    "theme": "Discord",
+    "accent_color": "#7289da",
     "text_color": "#ffffff",
-    "accent_color": "#7289da"
+    "bg_rgb": [20, 20, 28],
+    "opacity": 0.8,
+    "font_size": 13,
+    "corner_radius": 10
 }
