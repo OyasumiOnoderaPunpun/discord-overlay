@@ -56,6 +56,7 @@ Copy `config.example.json` to `config.json` and fill in your values:
     "webhook_url": "PASTE_YOUR_WEBHOOK_URL_HERE",
     "channel_id": "PASTE_YOUR_CHANNEL_ID_HERE",
     "hotkey": "insert",
+    "chat_hotkey": "`",
     "opacity": 0.8,
     "bg_color": "rgba(30, 30, 30, 200)",
     "text_color": "#ffffff",
@@ -69,7 +70,8 @@ Copy `config.example.json` to `config.json` and fill in your values:
 | `bot_token` | Discord bot token (keep this private!) |
 | `webhook_url` | Discord webhook URL for the channel |
 | `channel_id` | The Discord channel ID to read messages from |
-| `hotkey` | Key to toggle lock/unlock (default: `insert`) |
+| `hotkey` | Key to lock/unlock window position (default: `insert`) |
+| `chat_hotkey` | Key to open/close the chat input (default: `` ` `` backtick) |
 | `opacity` | Window opacity from `0.0` (invisible) to `1.0` (solid) |
 | `accent_color` | Color of the input box border |
 
@@ -79,8 +81,10 @@ Copy `config.example.json` to `config.json` and fill in your values:
 
 | Key | Action |
 |---|---|
-| `Insert` | Toggle lock (click-through) / unlock (interactive) mode |
-| `Enter` | Send message |
+| `` ` `` (backtick) | Open chat / focus input box for typing |
+| `Escape` | Close chat / return to click-through mode |
+| `Enter` | Send message (auto-closes chat after sending) |
+| `Insert` | Lock / unlock window **position** (prevents accidental dragging, overlay stays interactive) |
 
 ---
 

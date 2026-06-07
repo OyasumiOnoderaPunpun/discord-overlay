@@ -4,8 +4,8 @@
     "webhook_url": "PASTE_YOUR_WEBHOOK_URL_HERE",
     "channel_id": "PASTE_YOUR_CHANNEL_ID_HERE",
     "hotkey": "insert",
+    "chat_hotkey": "`",
     "opacity": 0.8,
-    "bg_color": "rgba(30, 30, 30, 200)",
     "text_color": "#ffffff",
     "accent_color": "#7289da"
 }

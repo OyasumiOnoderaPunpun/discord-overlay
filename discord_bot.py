@@ -1,12 +1,14 @@
 import asyncio
 import threading
+import queue
 import discord
-import requests
+import aiohttp
 from PyQt6.QtCore import QObject, pyqtSignal
 
+
 class DiscordSignals(QObject):
-    message_received = pyqtSignal(str, str) # author, content
-    status_changed = pyqtSignal(str) # Status messages (e.g., "Connected")
+    status_changed = pyqtSignal(str)
+
 
 class DiscordManager:
     def __init__(self, config):
@@ -16,23 +18,31 @@ class DiscordManager:
         self.loop = None
         self.thread = None
 
+        # Thread-safe queue: UI polls this instead of receiving cross-thread signals
+        # Each item is a tuple: ("msg", author, content) or ("status", text)
+        self.message_queue = queue.Queue()
+
     def send_webhook_message(self, content):
-        if not self.config.get("webhook_url"):
+        """Send a message via webhook — runs async on the bot's event loop (non-blocking)."""
+        webhook_url = self.config.get("webhook_url")
+        if not webhook_url:
             return
-        
-        data = {
-            "content": content,
-            "username": self.config.get("username", "Unknown User")
-        }
-        
-        # Run in a separate thread to not block UI
-        def _send():
+
+        username = self.config.get("username", "Player")
+
+        async def _send_async():
             try:
-                requests.post(self.config["webhook_url"], json=data)
+                async with aiohttp.ClientSession() as session:
+                    await session.post(
+                        webhook_url,
+                        json={"content": content, "username": username},
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    )
             except Exception as e:
-                print(f"Failed to send webhook: {e}")
-                
-        threading.Thread(target=_send, daemon=True).start()
+                print(f"Webhook error: {e}")
+
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send_async(), self.loop)
 
     def start_bot(self):
         self.thread = threading.Thread(target=self._run_bot, daemon=True)
@@ -41,33 +51,36 @@ class DiscordManager:
     def _run_bot(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        
+
         intents = discord.Intents.default()
         intents.message_content = True
-        
+
         self.bot = discord.Client(intents=intents)
-        
+
         @self.bot.event
         async def on_ready():
-            self.signals.status_changed.emit(f"Connected as {self.bot.user}")
-            print(f'Logged in as {self.bot.user}')
+            msg = f"✅ Connected as {self.bot.user}"
+            self.message_queue.put(("status", msg))
 
         @self.bot.event
         async def on_message(message):
-            # Ignore our own bot messages
+            # Ignore bot's own messages
             if message.author == self.bot.user:
                 return
-                
             # Only listen to the configured channel
-            if str(message.channel.id) == str(self.config.get("channel_id")):
-                self.signals.message_received.emit(message.author.display_name, message.content)
-                
+            if str(message.channel.id) == str(self.config.get("channel_id", "")):
+                self.message_queue.put(("msg", message.author.display_name, message.content))
+
+        @self.bot.event
+        async def on_disconnect():
+            self.message_queue.put(("status", "⚠️ Disconnected — reconnecting..."))
+
         try:
             self.loop.run_until_complete(self.bot.start(self.config["bot_token"]))
         except Exception as e:
-            self.signals.status_changed.emit(f"Error: {e}")
+            self.message_queue.put(("status", f"❌ Error: {e}"))
             print(f"Bot error: {e}")
 
     def stop_bot(self):
-        if self.loop and self.bot:
+        if self.loop and self.bot and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(self.bot.close(), self.loop)
