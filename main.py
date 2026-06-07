@@ -40,6 +40,7 @@ CONFIG_DEFAULTS = {
     "opacity":       0.8,
     "font_size":     13,
     "corner_radius": 10,
+    "show_scrollbar": False,
 }
 
 
@@ -262,7 +263,31 @@ class SettingsPanel(QFrame):
         radius_row.addWidget(self.radius_slider)
         root.addLayout(radius_row)
 
+        root.addSpacing(6)
+
+        # Show Scrollbar
+        sb_row = QHBoxLayout()
+        sb_row.addWidget(QLabel("↕", styleSheet="color:#cccccc;font-size:12px;"))
+        sb_row.addWidget(QLabel("Scrollbar", styleSheet="color:#cccccc;font-size:12px;"))
+        sb_row.addStretch()
+        self.sb_btn = QPushButton()
+        self.sb_btn.setCheckable(True)
+        self.sb_btn.setChecked(self.overlay.show_scrollbar)
+        self.sb_btn.setFixedSize(48, 20)
+        self.sb_btn.setObjectName("toggle_btn")
+        self.sb_btn.clicked.connect(self._on_sb)
+        self._refresh_sb()
+        sb_row.addWidget(self.sb_btn)
+        root.addLayout(sb_row)
+
     # ── refresh helpers ──────────────────────────────────────────────────────
+    def _on_sb(self, checked):
+        self.overlay._set_show_scrollbar(checked)
+        self._refresh_sb()
+
+    def _refresh_sb(self):
+        self.sb_btn.setText("ON" if self.sb_btn.isChecked() else "OFF")
+
     def _on_aot(self, checked):
         self.overlay.always_on_top = checked
         self.overlay._apply_window_flags()
@@ -355,6 +380,7 @@ class ChatOverlay(QMainWindow):
         self.current_theme = config.get("theme",         "Discord")
         self.font_size     = int(config.get("font_size",     13))
         self.corner_radius = int(config.get("corner_radius", 10))
+        self.show_scrollbar= bool(config.get("show_scrollbar", False))
         self.bg_rgb        = tuple(config.get("bg_rgb", [20, 20, 28]))
         self._recording    = False
 
@@ -410,8 +436,7 @@ class ChatOverlay(QMainWindow):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setStyleSheet("background: transparent;")
-        # Hide scrollbar — scroll wheel still works; auto-scroll keeps latest visible
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._apply_scrollbar_policy()
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self.chat_widget = QWidget()
@@ -450,6 +475,12 @@ class ChatOverlay(QMainWindow):
                 flags |= Qt.WindowType.WindowTransparentForInput
         self.setWindowFlags(flags)
         self.show()
+
+    def _apply_scrollbar_policy(self):
+        if self.show_scrollbar:
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        else:
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     # -----------------------------------------------------------------------
     # Stylesheet (all dynamic values go through here)
@@ -548,6 +579,22 @@ class ChatOverlay(QMainWindow):
                 width: 12px; height: 12px;
                 border-radius: 6px; margin: -5px 0;
             }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 6px;
+                margin: 2px 2px 2px 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(255, 255, 255, 30);
+                border-radius: 3px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {ac};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
         """)
 
     # -----------------------------------------------------------------------
@@ -590,6 +637,11 @@ class ChatOverlay(QMainWindow):
     def _set_corner_radius(self, value: int):
         self.corner_radius = value
         self._apply_styles()
+        self._save_config()
+
+    def _set_show_scrollbar(self, checked: bool):
+        self.show_scrollbar = checked
+        self._apply_scrollbar_policy()
         self._save_config()
 
     def _set_opacity(self, value: int):
@@ -762,6 +814,7 @@ class ChatOverlay(QMainWindow):
             "text_color":    self.text_color,
             "font_size":     self.font_size,
             "corner_radius": self.corner_radius,
+            "show_scrollbar": self.show_scrollbar,
             "bg_rgb":        list(self.bg_rgb),
         })
         try:
