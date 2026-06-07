@@ -4,9 +4,9 @@ import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QLabel, QLineEdit,
                              QScrollArea, QPushButton, QFrame, QSizeGrip, QSlider,
-                             QColorDialog, QFileDialog)
+                             QColorDialog, QFileDialog, QDialog)
 from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QObject, QByteArray, QBuffer, QIODevice
-from PyQt6.QtGui import QCursor, QColor, QKeySequence
+from PyQt6.QtGui import QCursor, QColor, QKeySequence, QPixmap
 from pynput import keyboard
 
 
@@ -380,6 +380,54 @@ class SettingsPanel(QFrame):
 
 
 # ---------------------------------------------------------------------------
+# Image handling
+# ---------------------------------------------------------------------------
+class ImageDialog(QDialog):
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Image Viewer")
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setStyleSheet("background: rgba(0, 0, 0, 210);")
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.img_label = QLabel()
+        self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Scale to screen if too large
+        screen = QApplication.primaryScreen().geometry()
+        max_w, max_h = screen.width() * 0.8, screen.height() * 0.8
+        
+        if pixmap.width() > max_w or pixmap.height() > max_h:
+            pixmap = pixmap.scaled(int(max_w), int(max_h), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            
+        self.img_label.setPixmap(pixmap)
+        layout.addWidget(self.img_label)
+        
+    def mousePressEvent(self, event):
+        self.close()
+
+class ImageLabel(QLabel):
+    def __init__(self, file_path, parent=None):
+        super().__init__(parent)
+        self.original_pixmap = QPixmap(file_path)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent;")
+        
+        max_w = 200
+        if self.original_pixmap.width() > max_w:
+            scaled = self.original_pixmap.scaledToWidth(max_w, Qt.TransformationMode.SmoothTransformation)
+        else:
+            scaled = self.original_pixmap
+        self.setPixmap(scaled)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dialog = ImageDialog(self.original_pixmap, self.window())
+            self.dialog.show()
+
+# ---------------------------------------------------------------------------
 # Main overlay
 # ---------------------------------------------------------------------------
 class ChatOverlay(QMainWindow):
@@ -704,11 +752,14 @@ class ChatOverlay(QMainWindow):
                 break
             item = q.get_nowait()
             if item[0] == "msg":
-                self._add_message(item[1], item[2])
+                if len(item) == 4:
+                    self._add_message(item[1], item[2], item[3])
+                else:
+                    self._add_message(item[1], item[2])
             elif item[0] == "status":
                 self._add_status(item[1])
 
-    def _add_message(self, author, content):
+    def _add_message(self, author, content, image_paths=None):
         lbl = QLabel()
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -719,6 +770,13 @@ class ChatOverlay(QMainWindow):
         )
         lbl.setStyleSheet("padding: 1px 8px;")
         self.chat_layout.addWidget(lbl)
+        
+        if image_paths:
+            for path in image_paths:
+                img_lbl = ImageLabel(path)
+                img_lbl.setStyleSheet("padding: 2px 8px;")
+                self.chat_layout.addWidget(img_lbl)
+
         # Always snap to latest — regardless of typing state
         QTimer.singleShot(0,  self._scroll_to_bottom)
         QTimer.singleShot(50, self._scroll_to_bottom)   # second pass after layout settles
