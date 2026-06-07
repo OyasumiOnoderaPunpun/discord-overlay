@@ -1,0 +1,19 @@
+# --- Sensitive Files (NEVER commit these) ---
+config.json
+
+# --- Python Environment ---
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- PyInstaller Build Output ---
+build/
+dist/
+*.spec
+
+# --- OS Files ---
+.DS_Store
+Thumbs.db
+desktop.ini
