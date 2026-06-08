@@ -104,10 +104,13 @@ class TitleBar(QFrame):
 # ---------------------------------------------------------------------------
 # Helper widgets
 # ---------------------------------------------------------------------------
-def _separator():
+def _separator(obj_name=None):
     sep = QFrame()
     sep.setFrameShape(QFrame.Shape.HLine)
-    sep.setStyleSheet("background: rgba(255,255,255,12); max-height: 1px;")
+    if obj_name:
+        sep.setObjectName(obj_name)
+    else:
+        sep.setStyleSheet("background: rgba(255,255,255,12); max-height: 1px;")
     return sep
 
 def _section_header(text):
@@ -495,7 +498,7 @@ class ChatOverlay(QMainWindow):
         bg.addWidget(self.settings_panel)
 
         # ── Thin separator ────────────────────────────────────────────────────
-        bg.addWidget(_separator())
+        bg.addWidget(_separator("title_separator"))
 
         # ── Chat scroll area ──────────────────────────────────────────────────
         self.scroll_area = QScrollArea()
@@ -600,6 +603,10 @@ class ChatOverlay(QMainWindow):
                 color: rgba(255,255,255,35);
                 font-size: 11px;
                 background: transparent;
+            }}
+            #title_separator {{
+                background: {ac};
+                max-height: 1px;
             }}
             #settings_panel {{
                 background: rgba(0,0,0,45);
