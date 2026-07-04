@@ -1,13 +1,33 @@
 import sys
 import json
 import os
+import re
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QLabel, QLineEdit,
                              QScrollArea, QPushButton, QFrame, QSizeGrip, QSlider,
                              QColorDialog, QFileDialog, QDialog)
-from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QObject, QByteArray, QBuffer, QIODevice
-from PyQt6.QtGui import QCursor, QColor, QKeySequence, QPixmap
+from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QObject, QByteArray, QBuffer, QIODevice, QSize
+from PyQt6.QtGui import QCursor, QColor, QKeySequence, QPixmap, QMovie
 from pynput import keyboard
+
+# Regex to detect URLs in message text
+_URL_RE = re.compile(
+    r'(https?://[^\s<>"{}|\\^`\[\]]+)',
+    re.IGNORECASE
+)
+
+# Regex to detect :shortcode: emoji patterns
+_SHORTCODE_RE = re.compile(r':(\w[\w+-]*\w|\w):')
+
+# Full emoji set + shortcode map — loaded from companion module
+from emoji_data import EMOJI_DATA, SHORTCODE_MAP as EMOJI_SHORTCODES
+# Build a flat list for search: [(char, name, category_key), ...]
+_EMOJI_FLAT = [
+    (char, name, cat)
+    for cat, entries in EMOJI_DATA.items()
+    for char, name in entries
+]
+
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +403,7 @@ class SettingsPanel(QFrame):
 
 
 # ---------------------------------------------------------------------------
-# Image handling
+# Image / GIF handling
 # ---------------------------------------------------------------------------
 class ImageDialog(QDialog):
     def __init__(self, pixmap, parent=None):
@@ -391,25 +411,48 @@ class ImageDialog(QDialog):
         self.setWindowTitle("Image Viewer")
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet("background: rgba(0, 0, 0, 210);")
-        
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        # Scale to screen if too large
         screen = QApplication.primaryScreen().geometry()
         max_w, max_h = screen.width() * 0.8, screen.height() * 0.8
-        
         if pixmap.width() > max_w or pixmap.height() > max_h:
             pixmap = pixmap.scaled(int(max_w), int(max_h), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            
         self.img_label.setPixmap(pixmap)
         layout.addWidget(self.img_label)
-        
+
     def mousePressEvent(self, event):
         self.close()
+
+
+class GifDialog(QDialog):
+    """Full-size animated GIF viewer — click anywhere to close."""
+    def __init__(self, file_path, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setStyleSheet("background: rgba(0, 0, 0, 210);")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._lbl = QLabel()
+        self._lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._movie = QMovie(file_path)
+        screen = QApplication.primaryScreen().geometry()
+        max_w = int(screen.width() * 0.8)
+        max_h = int(screen.height() * 0.8)
+        self._movie.jumpToFrame(0)
+        orig = self._movie.currentPixmap()
+        if orig.width() > 0 and (orig.width() > max_w or orig.height() > max_h):
+            ratio = min(max_w / orig.width(), max_h / orig.height())
+            self._movie.setScaledSize(QSize(int(orig.width() * ratio), int(orig.height() * ratio)))
+        self._lbl.setMovie(self._movie)
+        layout.addWidget(self._lbl)
+        self._movie.start()
+
+    def mousePressEvent(self, event):
+        self._movie.stop()
+        self.close()
+
 
 class ImageLabel(QLabel):
     def __init__(self, file_path, parent=None):
@@ -417,7 +460,6 @@ class ImageLabel(QLabel):
         self.original_pixmap = QPixmap(file_path)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("background: transparent;")
-        
         max_w = 200
         if self.original_pixmap.width() > max_w:
             scaled = self.original_pixmap.scaledToWidth(max_w, Qt.TransformationMode.SmoothTransformation)
@@ -429,6 +471,168 @@ class ImageLabel(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dialog = ImageDialog(self.original_pixmap, self.window())
             self.dialog.show()
+
+
+class GifLabel(QLabel):
+    """Animated GIF widget — plays inline at max 200px wide; click to view full size."""
+    def __init__(self, file_path, parent=None):
+        super().__init__(parent)
+        self._file_path = file_path
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent;")
+        self._movie = QMovie(file_path)
+        max_w = 200
+        self._movie.jumpToFrame(0)
+        orig = self._movie.currentPixmap()
+        if orig.width() > max_w and orig.width() > 0:
+            ratio = max_w / orig.width()
+            self._movie.setScaledSize(QSize(max_w, int(orig.height() * ratio)))
+        self.setMovie(self._movie)
+        self._movie.start()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dialog = GifDialog(self._file_path, self.window())
+            self.dialog.show()
+
+
+# ---------------------------------------------------------------------------
+# Emoji picker
+# ---------------------------------------------------------------------------
+class EmojiPicker(QFrame):
+    """Full Discord-style emoji picker — all Unicode categories with live name search."""
+    emoji_selected = pyqtSignal(str)
+
+    _BTN_STYLE = (
+        "QPushButton { background: transparent; border: none; font-size: 18px; border-radius: 4px; padding: 1px; }"
+        "QPushButton:hover { background: rgba(255,255,255,18); }"
+    )
+    _MAX_GRID = 200   # cap results shown at once so the grid stays responsive
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("emoji_picker")
+        self._cats = list(EMOJI_DATA.keys())
+        self._current_category = self._cats[0]
+        self._search_query = ""
+        self._category_btns = {}
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 4)
+        root.setSpacing(4)
+
+        # ── Search bar ──────────────────────────────────────────────────────
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText("🔍  Search all emojis by name…")
+        self._search_box.setFixedHeight(24)
+        self._search_box.textChanged.connect(self._on_search)
+        root.addWidget(self._search_box)
+
+        # ── Category tabs ───────────────────────────────────────────────────
+        cat_scroll = QScrollArea()
+        cat_scroll.setFixedHeight(30)
+        cat_scroll.setWidgetResizable(True)
+        cat_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cat_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        cat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        cat_scroll.setStyleSheet("background: transparent;")
+
+        cat_inner = QWidget()
+        cat_inner.setStyleSheet("background: transparent;")
+        cat_row = QHBoxLayout(cat_inner)
+        cat_row.setSpacing(2)
+        cat_row.setContentsMargins(0, 0, 0, 0)
+        for cat in self._cats:
+            icon = cat.split()[0]          # e.g. "😀" from "😀 Smileys & Emotion"
+            btn = QPushButton(icon)
+            btn.setFixedSize(26, 24)
+            btn.setToolTip(cat)
+            btn.setStyleSheet("background: transparent; border: none; font-size: 15px;")
+            btn.clicked.connect(lambda _, c=cat: self._select_category(c))
+            self._category_btns[cat] = btn
+            cat_row.addWidget(btn)
+        cat_row.addStretch()
+        cat_scroll.setWidget(cat_inner)
+        root.addWidget(cat_scroll)
+
+        # ── Emoji grid ──────────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet("background: transparent;")
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._grid_widget = QWidget()
+        self._grid_widget.setStyleSheet("background: transparent;")
+        self._grid_layout = QGridLayout(self._grid_widget)
+        self._grid_layout.setSpacing(1)
+        self._grid_layout.setContentsMargins(0, 0, 0, 0)
+        self._scroll.setWidget(self._grid_widget)
+        root.addWidget(self._scroll, 1)
+
+        # ── Result count hint ───────────────────────────────────────────────
+        self._hint_lbl = QLabel("")
+        self._hint_lbl.setStyleSheet("color: rgba(255,255,255,25); font-size: 10px; padding: 0 2px;")
+        root.addWidget(self._hint_lbl)
+
+        self._populate_grid()
+        self._refresh_category_btns()
+
+    # ── Event handlers ────────────────────────────────────────────────────────
+    def _on_search(self, text):
+        self._search_query = text.lower().strip()
+        self._scroll.verticalScrollBar().setValue(0)
+        self._populate_grid()
+
+    def _select_category(self, cat):
+        self._current_category = cat
+        self._search_box.clear()   # clears _search_query too via textChanged
+        self._scroll.verticalScrollBar().setValue(0)
+        self._refresh_category_btns()
+
+    # ── Grid builder ─────────────────────────────────────────────────────────
+    def _populate_grid(self):
+        # Remove old widgets
+        while self._grid_layout.count():
+            item = self._grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        q = self._search_query
+        if q:
+            # Search across ALL categories by name substring
+            matches = [(ch, nm) for ch, nm, _ in _EMOJI_FLAT if q in nm]
+            total = len(matches)
+            entries = matches[:self._MAX_GRID]
+            self._hint_lbl.setText(
+                f"{total} result{'s' if total != 1 else ''}"
+                + (f"  (showing first {self._MAX_GRID})" if total > self._MAX_GRID else "")
+            )
+        else:
+            entries = EMOJI_DATA.get(self._current_category, [])
+            self._hint_lbl.setText(f"{len(entries)} emoji")
+
+        cols = 9
+        for i, (char, name) in enumerate(entries):
+            btn = QPushButton(char)
+            btn.setFixedSize(30, 30)
+            btn.setToolTip(name)
+            btn.setStyleSheet(self._BTN_STYLE)
+            btn.clicked.connect(lambda _, e=char: self.emoji_selected.emit(e))
+            self._grid_layout.addWidget(btn, i // cols, i % cols)
+
+    def _refresh_category_btns(self):
+        for cat, btn in self._category_btns.items():
+            if cat == self._current_category and not self._search_query:
+                btn.setStyleSheet(
+                    "background: rgba(255,255,255,22); border-radius: 4px; font-size: 15px; border: none;"
+                )
+            else:
+                btn.setStyleSheet(
+                    "background: transparent; border: none; font-size: 15px;"
+                )
 
 # ---------------------------------------------------------------------------
 # Main overlay
@@ -534,15 +738,29 @@ class ChatOverlay(QMainWindow):
         self.attachment_layout.addStretch()
         bg.addWidget(self.attachment_widget)
 
+        # ── Emoji picker panel (hidden by default) ────────────────────────────
+        self.emoji_panel = EmojiPicker()
+        self.emoji_panel.setVisible(False)
+        self.emoji_panel.setFixedHeight(230)
+        self.emoji_panel.emoji_selected.connect(self._insert_emoji)
+        bg.addWidget(self.emoji_panel)
+
         # ── Input row + resize grip ───────────────────────────────────────────
         input_row = QHBoxLayout()
         input_row.setContentsMargins(8, 0, 4, 0)
-        
+        input_row.setSpacing(4)
+
         self.attach_btn = QPushButton("📎")
         self.attach_btn.setFixedSize(22, 22)
         self.attach_btn.setToolTip("Attach File")
         self.attach_btn.clicked.connect(self._open_file_dialog)
         input_row.addWidget(self.attach_btn)
+
+        self.emoji_btn = QPushButton("😊")
+        self.emoji_btn.setFixedSize(22, 22)
+        self.emoji_btn.setToolTip("Emoji Picker  (also supports :shortcodes:)")
+        self.emoji_btn.clicked.connect(self._toggle_emoji_picker)
+        input_row.addWidget(self.emoji_btn)
 
         self.input_box = ChatInput()
         self._refresh_placeholder()
@@ -695,6 +913,11 @@ class ChatOverlay(QMainWindow):
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
+            #emoji_picker {{
+                background: rgba(0,0,0,60);
+                border-top: 1px solid rgba(255,255,255,10);
+                border-bottom: 1px solid rgba(255,255,255,10);
+            }}
         """)
 
     # -----------------------------------------------------------------------
@@ -766,23 +989,41 @@ class ChatOverlay(QMainWindow):
             elif item[0] == "status":
                 self._add_status(item[1])
 
+    def _linkify(self, text: str) -> str:
+        """Wrap URLs in <a href> tags styled to stand out and be clickable."""
+        def replace_url(m):
+            url = m.group(1)
+            return (
+                f'<a href="{url}" style="color:#00b0ff; text-decoration:underline;'
+                f' font-weight:bold;">{url}</a>'
+            )
+        return _URL_RE.sub(replace_url, text)
+
     def _add_message(self, author, content, image_paths=None):
         lbl = QLabel()
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setOpenExternalLinks(True)   # clicking a link opens the browser
+        lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+        )
+        linked_content = self._linkify(content)
         lbl.setText(
             f'<span style="color:{self.accent_color};font-weight:bold;'
             f'font-size:{self.font_size}px;">{author}</span>'
-            f'<span style="color:{self.text_color};font-size:{self.font_size}px;">: {content}</span>'
+            f'<span style="color:{self.text_color};font-size:{self.font_size}px;">: {linked_content}</span>'
         )
         lbl.setStyleSheet("padding: 1px 8px;")
         self.chat_layout.addWidget(lbl)
-        
+
         if image_paths:
             for path in image_paths:
-                img_lbl = ImageLabel(path)
-                img_lbl.setStyleSheet("padding: 2px 8px;")
-                self.chat_layout.addWidget(img_lbl)
+                if path.lower().endswith(".gif"):
+                    media_lbl = GifLabel(path)   # animated!
+                else:
+                    media_lbl = ImageLabel(path)
+                media_lbl.setStyleSheet("padding: 2px 8px;")
+                self.chat_layout.addWidget(media_lbl)
 
         # Always snap to latest — regardless of typing state
         QTimer.singleShot(0,  self._scroll_to_bottom)
@@ -823,13 +1064,37 @@ class ChatOverlay(QMainWindow):
     # Sending  — NO auto-close after Enter; user controls when to close chat
     # -----------------------------------------------------------------------
     def _send_message(self):
-        content = self.input_box.text().strip()
+        raw = self.input_box.text().strip()
+        content = self._process_shortcodes(raw)   # :smile: → 😊 etc.
         if content or self.current_attachment:
             self.discord_mgr.send_webhook_message(content, self.current_attachment)
             self.input_box.clear()
             self._clear_attachment()
         # ↑ Intentionally NOT calling _close_chat() here.
         # User presses Esc or the chat hotkey again to dismiss.
+
+    # -----------------------------------------------------------------------
+    # Emoji picker helpers
+    # -----------------------------------------------------------------------
+    def _toggle_emoji_picker(self):
+        self.emoji_panel.setVisible(not self.emoji_panel.isVisible())
+        if self.emoji_panel.isVisible():
+            self.input_box.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _insert_emoji(self, emoji: str):
+        """Insert emoji at the current cursor position in the input box."""
+        pos = self.input_box.cursorPosition()
+        text = self.input_box.text()
+        self.input_box.setText(text[:pos] + emoji + text[pos:])
+        self.input_box.setCursorPosition(pos + len(emoji))
+        self.input_box.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _process_shortcodes(self, text: str) -> str:
+        """Convert :shortcode: patterns to their Unicode emoji equivalents."""
+        def replace(m):
+            code = f":{m.group(1)}:"
+            return EMOJI_SHORTCODES.get(code, m.group(0))
+        return _SHORTCODE_RE.sub(replace, text)
 
     # -----------------------------------------------------------------------
     # Chat open / close
@@ -861,12 +1126,21 @@ class ChatOverlay(QMainWindow):
             import ctypes
             hwnd = int(self.winId())
             ctypes.windll.user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+            # AllowSetForegroundWindow(-1) lets us steal focus from any process
+            ctypes.windll.user32.AllowSetForegroundWindow(ctypes.windll.kernel32.GetCurrentProcessId())
             ctypes.windll.user32.SetForegroundWindow(hwnd)    # steal foreground
         except Exception:
             pass
         self.raise_()
         self.activateWindow()
-        self.input_box.setFocus()
+        self.input_box.setFocus(Qt.FocusReason.OtherFocusReason)
+        # Second deferred pass — some compositors/games need an extra nudge
+        QTimer.singleShot(150, self._ensure_input_focus)
+
+    def _ensure_input_focus(self):
+        """Secondary focus grab to handle cases where the first attempt was blocked."""
+        self.activateWindow()
+        self.input_box.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _refresh_placeholder(self):
         k = self.chat_hotkey
